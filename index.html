@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepSeek — чат</title>
+    <script>
+        // если страницу открыли как ЛОКАЛЬНЫЙ файл — переходим на сервер проекта
+        (function () {
+            try {
+                if (window.location.protocol === "file:") {
+                    var port = window.DS_SERVER_PORT || 8000;
+                    var host = window.DS_SERVER_HOST || "127.0.0.1";
+                    window.location.replace("http://" + host + ":" + port + "/");
+                }
+            } catch (e) { /* беззвучно */ }
+        })();
+    </script>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="layout">
+
+        <!-- Ввод слева. Каждый блок обёрнут в сворачиваемую СЕКЦИЮ:
+             заголовок (.side-sec-head) — кликабельная кнопка, тело
+             (.side-sec-body) — содержимое. Клик по заголовку сворачивает/
+             разворачивает блок. Когда блок свёрнут, но внутри есть активное
+             использование (напр. включён MCP, есть инварианты/профили/память)
+             — заголовок подсвечивается оливковым (см. CSS .side-sec.in-use). -->
+        <aside class="side">
+            <!-- Стратегия управления контекстом (взаимоисключающие) -->
+            <section class="side-sec" data-section="strategy">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Стратегия контекста</span>
+                </button>
+                <div class="side-sec-body">
+                    <div class="strategy-group side-strategy" id="strategy-group">
+                        <button type="button" class="strat-btn active" data-strategy="none"
+                                title="Без стратегии: в запрос уходит полная история">Нет</button>
+                        <button type="button" class="strat-btn" data-strategy="sliding"
+                                title="Sliding Window: только последние N сообщений, старое отбрасывается">Sliding</button>
+                        <button type="button" class="strat-btn" data-strategy="facts"
+                                title="Sticky Facts: блок facts (key-value) + последние N сообщений">Facts</button>
+                        <button type="button" class="strat-btn" data-strategy="branch"
+                                title="Branching: независимые ветки диалога от checkpoint">Branch</button>
+                    </div>
+                    <label class="compact-label side-label">
+                        <span>окно N</span>
+                        <input type="number" id="strategy-window" class="gen-input compact-input"
+                               min="0" max="200" step="1" value="10">
+                    </label>
+                    <span class="side-note">Sliding/Facts: сколько последних сообщений брать (0 — вся история)</span>
+                </div>
+            </section>
+
+            <!-- СОСТОЯНИЕ ЗАДАЧИ (Task State Machine): формализованный
+                 конечный автомат «этап -> шаг -> ожидаемое действие».
+                 Этапы: planning -> execution -> validation -> done.
+                 Задачу можно поставить НА ПАУЗУ на любом этапе и продолжить
+                 с того же места (цель и журнал сохраняются). Пока задача
+                 ведётся, её состояние подставляется в системный промпт. -->
+            <section class="side-sec" data-section="task">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Состояние задачи</span>
+                </button>
+                <div class="side-sec-body">
+                    <div id="task-box" class="task-box">
+                        <div class="task-empty">задача не заведена — задайте цель ниже</div>
+                    </div>
+                    <div class="task-actions">
+                        <input type="text" id="task-goal" class="gen-input task-input"
+                               placeholder="цель задачи" maxlength="300">
+                        <div class="task-steps" id="task-stages"></div>
+                        <div class="task-buttons">
+                            <button id="task-start" type="button" class="btn-side primary">Завести</button>
+                            <button id="task-advance" type="button" class="btn-side">Следующий этап</button>
+                            <button id="task-pause" type="button" class="btn-side link">Пауза</button>
+                            <button id="task-resume" type="button" class="btn-side link">Продолжить</button>
+                            <button id="task-finish" type="button" class="btn-side link">Завершить</button>
+                            <button id="task-reset" type="button" class="btn-side link">Сброс</button>
+                        </div>
+                    </div>
+                    <span class="side-note">этап → шаг → ожидаемое действие; пауза возможна на любом этапе</span>
+                </div>
+            </section>
+
+            <!-- Профили (персоны): именованные наборы состояния — своя память,
+                 свой диалог и своя манера общения. У профиля задаются ХАРАКТЕР
+                 (тон) и ХАРАКТЕР ОТВЕТОВ (формат/длина) — они подставляются в
+                 системный промпт каждой модели. Переключение профиля заменяет
+                 активную память и диалог. -->
+            <section class="side-sec" data-section="profiles">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Профили (персоны)</span>
+                </button>
+                <div class="side-sec-body">
+                    <div id="profiles-box" class="profiles-box">
+                        <div class="profiles-empty">Профилей пока нет. Нажмите «Создать профиль».</div>
+                    </div>
+                    <!-- Кнопка раскрытия формы создания. Видна, пока форма свёрнута. -->
+                    <button id="profile-new" type="button" class="btn-side primary">Создать профиль</button>
+                    <!-- Форма создания профиля: скрыта по умолчанию, раскрывается
+                         кнопкой «Создать профиль» и сворачивается после сохранения. -->
+                    <div class="profiles-actions" id="profiles-form" hidden>
+                        <input type="text" id="profile-name" class="gen-input profile-input"
+                               placeholder="имя" maxlength="40">
+                        <select id="profile-model" class="gen-input profile-input"
+                                title="Модель, которой будет отвечать персона"></select>
+                        <input type="text" id="profile-character" class="gen-input profile-input"
+                               placeholder="характер (тон)" maxlength="200">
+                        <input type="text" id="profile-style" class="gen-input profile-input"
+                               placeholder="характер ответов (формат)" maxlength="200">
+                        <div class="profiles-form-buttons">
+                            <button id="profile-save" type="button" class="btn-side primary">Сохранить профиль</button>
+                            <button id="profile-cancel" type="button" class="btn-side link">Отмена</button>
+                        </div>
+                    </div>
+                    <span class="side-note">персона отвечает своей моделью; характер — тон, характер ответов — формат и длину</span>
+                </div>
+            </section>
+
+            <!-- ИНВАРИАНТЫ: жёсткие правила (архитектура / техрешения / стек /
+                 бизнес-правила), которые ассистент НЕ вправе нарушать. Хранятся
+                 ОТДЕЛЬНО от диалога. При конфликте запроса с инвариантом
+                 ассистент отказывается предлагать решение и объясняет отказ. -->
+            <section class="side-sec" data-section="invariants">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Инварианты</span>
+                </button>
+                <div class="side-sec-body">
+                    <div id="invariants-box" class="invariants-box">
+                        <div class="invariants-empty">инвариантов нет — добавьте правило ниже</div>
+                    </div>
+                    <div class="invariants-actions">
+                        <select id="invariant-category" class="gen-input invariant-input"
+                                title="Категория инварианта"></select>
+                        <input type="text" id="invariant-text" class="gen-input invariant-input"
+                               placeholder="правило (например: только Qt и std C++)" maxlength="500">
+                        <div class="invariants-form-buttons">
+                            <button id="invariant-add" type="button" class="btn-side primary">Добавить</button>
+                            <button id="invariant-clear" type="button" class="btn-side link">Очистить</button>
+                        </div>
+                    </div>
+                    <span class="side-note">правила хранятся отдельно от диалога; при конфликте ассистент отказывает и объясняет причину</span>
+                </div>
+            </section>
+
+            <!-- MCP (Model Context Protocol): возможность использовать
+                 инструменты внешнего MCP-сервера. Чекбокс включает MCP,
+                 кнопка проверяет СТАТУС сервера (подключение + список
+                 инструментов), а селект выбирает МОДЕЛЬ, применяемую при
+                 работе с MCP. -->
+            <section class="side-sec" data-section="mcp">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">MCP</span>
+                </button>
+                <div class="side-sec-body">
+                    <div class="mcp-box">
+                        <label class="mcp-toggle" title="Использовать инструменты MCP-сервера">
+                            <input type="checkbox" id="mcp-enabled">
+                            <span>Использовать MCP</span>
+                        </label>
+                        <label class="compact-label side-label">
+                            <span>сервер MCP</span>
+                            <select id="mcp-server" class="gen-input mcp-input"
+                                    title="Какой MCP-сервер использовать (демо или календарь)"></select>
+                        </label>
+                        <label class="compact-label side-label">
+                            <span>модель MCP</span>
+                            <select id="mcp-model" class="gen-input mcp-input"
+                                    title="Модель, применяемая при работе с MCP"></select>
+                        </label>
+                        <div class="mcp-status-row">
+                            <button id="mcp-check" type="button" class="btn-side">Проверить статус</button>
+                            <span id="mcp-status" class="mcp-status"></span>
+                        </div>
+                        <div id="mcp-tools" class="mcp-tools" hidden></div>
+                        <!-- КОМПОЗИЦИЯ (task5): запуск пайплайна нескольких MCP-серверов
+                             календарь -> замполит -> завхоз (доска — вывод таблицей). -->
+                        <div class="mcp-status-row">
+                            <button id="mcp-compose" type="button" class="btn-side primary"
+                                    title="Запустить композицию: календарь → замполит → завхоз">Запустить композицию</button>
+                        </div>
+                        <div id="mcp-compose-status" class="mcp-compose-status" hidden></div>
+                    </div>
+                    <span class="side-note">MCP: подключение, инструменты, модель ответа, композиция</span>
+                </div>
+            </section>
+
+            <!-- Summary: автоматическое сжатие истории (без кнопки).
+                 Summary генерируется само после накопления указанного
+                 числа несжатых сообщений. -->
+            <section class="side-sec" data-section="summary">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Summary</span>
+                </button>
+                <div class="side-sec-body">
+                    <label class="compact-label side-label">
+                        <span>сохранить последних сообщений</span>
+                        <input type="number" id="compact-keep" class="gen-input compact-input"
+                               min="0" max="100" step="1" placeholder="0">
+                    </label>
+                    <span class="side-note">ранняя история → summary, последние N — полностью; 0 — сжатие выключено</span>
+                </div>
+            </section>
+
+            <!-- Память агента: три типа, хранятся и редактируются РАЗДЕЛЬНО.
+                 1) краткосрочная — текущий диалог (только чтение, автоматически);
+                 2) рабочая — данные текущей задачи (правим вручную);
+                 3) долговременная — профиль/решения/знания (правим вручную). -->
+            <section class="side-sec" data-section="memory">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">Память агента</span>
+                </button>
+                <div class="side-sec-body">
+                    <div class="mem-block mem-short">
+                        <div class="mem-head">Краткосрочная</div>
+                        <div class="mem-tag">диалог · авто</div>
+                        <div id="mem-short-info" class="mem-info">диалог пуст</div>
+                    </div>
+
+                    <div class="mem-block mem-working">
+                        <div class="mem-head">Рабочая</div>
+                        <div class="mem-tag">текущая задача</div>
+                        <div id="mem-working-box" class="mem-rows"></div>
+                        <div class="mem-actions">
+                            <button id="mem-working-add" type="button" class="btn-side link">+ строка</button>
+                            <button id="mem-working-save" type="button" class="btn-side">Сохранить</button>
+                            <button id="mem-working-clear" type="button" class="btn-side link">Очистить</button>
+                        </div>
+                    </div>
+
+                    <div class="mem-block mem-longterm">
+                        <div class="mem-head">Долговременная</div>
+                        <div class="mem-tag">профиль · решения</div>
+                        <div id="mem-longterm-box" class="mem-rows"></div>
+                        <div class="mem-actions">
+                            <button id="mem-longterm-add" type="button" class="btn-side link">+ строка</button>
+                            <button id="mem-longterm-save" type="button" class="btn-side">Сохранить</button>
+                            <button id="mem-longterm-clear" type="button" class="btn-side link">Очистить</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <button id="newchat" type="button" class="btn-side link"
+                    title="Начать новый разговор (очистить историю)">Новый разговор</button>
+        </aside>
+
+        <!-- Ответ справа -->
+        <main class="chat">
+            <header class="chat-head">
+                <!-- Статистика токенов по моделям + общий итог (столбиком) -->
+                <div class="tstat">
+                    <div class="tstat-head" id="ts-models-title">Токены по моделям</div>
+                    <ul class="tstat-models" id="ts-models">
+                        <!-- JS: строки по моделям (название · запрос/ответ · цена) -->
+                    </ul>
+                    <div class="tstat-totals">
+                        <span class="tstat-total">Итого&nbsp;<b id="ts-total">0</b></span>
+                    </div>
+                    <div class="tstat-bar" title="Запрос (вход) / Ответ (выход), вся сессия">
+                        <span class="seg seg-in" id="seg-in" style="width:50%"></span>
+                        <span class="seg seg-out" id="seg-out" style="width:50%"></span>
+                        <span class="tstat-empty" id="ts-empty">ожидание…</span>
+                    </div>
+                </div>
+
+                <!-- Справа от моделей: Запрос / Ответ / История (столбиком) -->
+                <div class="tstat-io">
+                    <div class="tstat-line">
+                        <i class="sw sw-in"></i>Запрос&nbsp;<b id="ts-in">0</b>
+                    </div>
+                    <div class="tstat-line">
+                        <i class="sw sw-out"></i>Ответ&nbsp;<b id="ts-out">0</b>
+                    </div>
+                    <div class="tstat-line" title="Оценка: доля входных токенов, ушедших на контекст-историю диалога">
+                        <i class="sw sw-hist"></i>История&nbsp;<b id="ts-hist">0</b>
+                        <span class="tstat-pct" id="ts-hist-pct">(0%)</span>
+                    </div>
+                    <div class="tstat-line" title="Сколько раз данные из рабочей памяти были задействованы в ответах (счётчик за сессию)">
+                        <i class="sw sw-working"></i><span class="mem-name-working">Рабочая</span>:&nbsp;<b id="ts-compacted">0</b>
+                    </div>
+                    <div class="tstat-line" title="Сколько раз данные из долговременной памяти были задействованы в ответах (счётчик за сессию)">
+                        <i class="sw sw-longterm"></i><span class="mem-name-longterm">Долговременная</span>:&nbsp;<b id="ts-from-summary">0</b>
+                    </div>
+                </div>
+
+                <!-- Ход запросов (цепочка агента) — в верхней строке справа -->
+                <div class="trace-head">
+                    <div class="panel-title">Ход запросов · агент</div>
+                    <div id="trace" class="panel-trace">
+                        <div class="trace-empty">ход: агент → работа → LLM → ответ</div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Выбор моделей: кнопки с названием модели + температура каждой -->
+            <div class="model-bar">
+                <div class="model-bar-hint">Выберите модели для запроса (можно несколько) и температуру каждой:</div>
+                <div id="model-buttons" class="model-list"></div>
+            </div>
+
+            <!-- Окно ответа: поток ответов модели и объединённая с ним
+                 секция «Факты / Ветки диалога» (стратегии Facts и Branch) -->
+            <div class="chat-body">
+                <!-- Поток сообщений / ответ модели -->
+                <div id="stream" class="stream">
+                    <!-- JS вставляет пузыри сообщений -->
+                </div>
+
+                <!-- Объединённая с центром панель: facts и ветки диалога -->
+                <section class="agent-panel">
+                    <!-- Facts (key-value память): стратегия Facts -->
+                    <div class="panel-title panel-title-sub" id="facts-title">Факты (facts)</div>
+                    <div id="facts-box" class="facts-box">
+                        <div class="facts-empty">факты появятся в стратегии «Facts»</div>
+                    </div>
+
+                    <!-- Ветки диалога: стратегия Branch -->
+                    <div class="panel-title panel-title-sub" id="branches-title">Ветки диалога</div>
+                    <div id="branches-box" class="branches-box">
+                        <div class="branches-empty">ветки появятся в стратегии «Branch»</div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Ввод запроса — внизу всего чата, по центру (вариант A) -->
+            <div class="composer">
+                <div class="composer-inner">
+                    <textarea id="question" class="qbox composer-input" rows="1"
+                              placeholder="Введите запрос… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+                    <button id="submit" type="button" class="btn-side composer-send">Отправить</button>
+                </div>
+                <div id="status" class="side-status composer-status" hidden></div>
+            </div>
+        </main>
+
+    </div>
+    <script src="/js/app.js"></script>
+</body>
+</html>

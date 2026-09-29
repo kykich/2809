@@ -1,0 +1,1572 @@
+/* Рабочее окно чата: слева 15% ввод запроса, справа 85% ответ.
+   Внутри окна ответа две колонки: слева ответ модели, справа «Ход запросов»
+   (цепочка действий агента: Агент -> LLM -> ... -> ответ). */
+
+* { box-sizing: border-box; }
+
+/* Атрибут hidden должен СКРЫВАТЬ элемент всегда — даже если у него задан
+   display (flex/grid/…): иначе `display` перекрывает встроенное
+   [hidden]{display:none} и элемент остаётся видимым. */
+[hidden] { display: none !important; }
+
+:root {
+    --accent: #4d6bfe;
+    --accent-dark: #3b54d6;
+    --text: #223;
+    --muted: #8a92a6;
+    --side-bg: #262b3a;
+    --side-fg: #e2e6f0;
+    --chat-bg: #f4f6fc;
+    --own-bg: #dfe6ff;
+    --ai-bg: #ffffff;
+}
+
+html, body { height: 100%; margin: 0; }
+body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow: hidden; }
+
+.layout {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+}
+
+/* ===== СЛЕВА: подгоняется по содержимому (ширина по контенту) ===== */
+.side {
+    /* Ширина по содержимому: CSS-fallback (fit-content), затем JS уточняет
+       фактическую ширину под самый широкий элемент (см. autoFitSide). */
+    flex: 0 0 auto;
+    width: fit-content;
+    width: max-content;
+    min-width: 180px;
+    max-width: 380px;
+    background: var(--side-bg);
+    color: var(--side-fg);
+    display: flex;
+    flex-direction: column;
+    padding: 12px 10px;
+    gap: 8px;
+    /* Панель прокручивается ЦЕЛИКОМ по вертикали: содержимое (стратегия,
+       задача, профили, память, кнопки) при нехватке высоты не выходит за
+       пределы колонки, а появляется вертикальная прокрутка. */
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+}
+/* Аккуратный скроллбар левой колонки (тёмная тема). */
+.side::-webkit-scrollbar { width: 8px; }
+.side::-webkit-scrollbar-thumb { background: #4a5270; border-radius: 6px; }
+.side::-webkit-scrollbar-track { background: transparent; }
+.side { scrollbar-width: thin; scrollbar-color: #4a5270 transparent; }
+/* Ввод и кнопки сохраняют свой размер и не сжимаются историей */
+.side > .side-title,
+.side > .qbox,
+.side > .btn-side,
+.side > .side-status {
+    flex: 0 0 auto;
+}
+
+.side-title {
+    font-weight: 700;
+    font-size: .82rem;
+    color: #cfd6ea;
+    letter-spacing: .3px;
+}
+.side-sub { margin-top: 6px; }
+
+.qbox {
+    width: 100%;
+    font: inherit;
+    font-size: .8rem;
+    padding: 8px;
+    border-radius: 6px;
+    border: none;
+    resize: vertical;
+    background: #343c52;
+    color: #fff;
+}
+.qbox::placeholder { color: #9aa2bd; }
+.qbox:focus { outline: 2px solid var(--accent); }
+
+.btn-side {
+    width: 100%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 9px 6px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: .8rem;
+    cursor: pointer;
+}
+.btn-side:hover { background: var(--accent-dark); }
+.btn-side:disabled { background: #6f7bb8; cursor: not-allowed; }
+.btn-side.link { background: #38405c; font-weight: 400; }
+.btn-side.link:hover { background: #465275; }
+
+.side-status {
+    font-size: .72rem;
+    padding: 6px;
+    border-radius: 5px;
+    background: #31384f;
+}
+.side-status.error { background: #5a2a33; color: #ffb9c2; }
+.side-status.ok { background: #1f4436; color: #b4f0cf; }
+
+/* ===== СПРАВА: занимает всё оставшееся место ===== */
+.chat {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--chat-bg);
+}
+
+.chat-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 22px;
+    padding: 10px 22px;
+    background: #fff;
+    border-bottom: 1px solid #e3e7f2;
+    flex-shrink: 0;
+}
+.model-tag { font-size: .78rem; color: var(--muted); white-space: nowrap; }
+
+/* Блок «Ход запросов · агент» — в верхней строке, справа от статистики.
+   Содержимое выстроено слева направо: заголовок, затем цепочка шагов. */
+.trace-head {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 14px;
+    flex: 1 1 auto;
+    min-width: 0;
+    border-left: 1px solid #e3e7f2;
+    padding-left: 22px;
+}
+.trace-head .panel-title {
+    position: static;
+    padding: 0;
+    background: transparent;
+    color: #2b3350;
+    font-size: .68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    border: none;
+}
+.trace-head #trace {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+/* Компактная цепочка шагов: метки слева направо, перенос по строкам,
+   без полосы прокрутки. */
+.ts-chain {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+}
+.ts-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: .68rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #e0e5f3;
+    color: #4a5370;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+/* соединитель-стрелка между метками */
+.ts-chip + .ts-chip::before {
+    content: "→";
+    margin-right: 6px;
+    margin-left: -2px;
+    color: #a9b1c8;
+    font-weight: 700;
+}
+/* цвет метки по типу шага */
+.ts-chip.enter  { background: #dbe2ff; color: #2c4ecf; }
+.ts-chip.act    { background: #ece1fb; color: #6a44b5; }
+.ts-chip.branch { background: #fdeacc; color: #a9701e; }
+.ts-chip.llm    { background: #d6f2dd; color: #1d7a34; }
+.ts-chip.exit   { background: #dfe4f0; color: #27427a; }
+.ts-chip.fail   { background: #f6d6da; color: #b02a37; }
+
+/* Блок «Запрос / Ответ / История» — сразу после статистики по моделям,
+   столбиком (сверху вниз) */
+.tstat-io {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    flex-shrink: 0;
+}
+.tstat-line {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    font-size: .74rem;
+    color: #4a5568;
+    line-height: 1.35;
+    white-space: nowrap;
+}
+.tstat-line b { color: #1b2559; font-variant-numeric: tabular-nums; }
+
+/* ===== Тело окна ответа: единая центральная колонка ===== */
+.chat-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.chat-body > .stream {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Левая часть — поток ответов модели */
+.stream {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 18px 22px 12px;
+}
+
+/* Секция «Факты / Ветки диалога» — объединена с центральной частью:
+   без отдельной колонки, ширины и боковой границы. */
+.agent-panel {
+    flex: 0 0 auto;
+    background: var(--chat-bg);
+    border-top: 1px solid #e3e7f2;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    max-height: 40%;
+}
+.panel-title {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 8px 22px;
+    background: var(--chat-bg);
+    color: #2b3350;
+    font-size: .68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    border-bottom: 1px solid #e3e7f2;
+}
+.panel-hint {
+    padding: 6px 14px;
+    font-size: .68rem;
+    color: #7d879c;
+    border-bottom: 1px solid #d9deeb;
+}
+#trace { padding: 0; }
+
+/* Пустое состояние цепочки запросов */
+.trace-empty {
+    font-size: .74rem;
+    color: #7d879c;
+    line-height: 1.4;
+}
+
+/* ===== Сообщения чата ===== */
+.msg { margin-bottom: 16px; }
+.msg .bubble {
+    padding: 11px 15px;
+    border-radius: 12px;
+    font-size: .95rem;
+    line-height: 1.5;
+}
+/* вопрос пользователя — справа, синим */
+.msg.q { margin-left: auto; max-width: 90%; }
+.msg.q .bubble { background: var(--own-bg); border-top-right-radius: 3px; color: #1e2650; }
+/* НАПОМИНАНИЕ календаря — слева, на КРАСНОМ фоне (привлекает внимание).
+   Доставляется автоматически при любом запросе пользователя. */
+.msg.reminder { width: 100%; max-width: 100%; }
+.msg.reminder .bubble {
+    background: #d93025;
+    color: #fff;
+    border: 1px solid #b3261e;
+    border-top-left-radius: 3px;
+    font-weight: 700;
+    box-shadow: 0 2px 8px rgba(179, 38, 30, 0.25);
+}
+.msg.reminder .bubble::before {
+    content: "🔔 ";
+    margin-right: 2px;
+}
+/* ответ модели — слева, занимает всю ширину */
+.msg.a { width: 100%; max-width: 100%; }
+.msg.a .bubble {
+    background: var(--ai-bg);
+    border: 1px solid #e3e7f2;
+    border-top-left-radius: 3px;
+    width: 100%;
+}
+
+.msg.a table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: .92em; }
+.msg.a th { background: var(--accent); color: #fff; padding: 7px 10px; text-align: center; border: 1px solid var(--accent); }
+.msg.a td { padding: 6px 10px; border: 1px solid #e0e4f0; vertical-align: top; }
+.msg.a tr:nth-child(even) td { background: #f7f8fc; }
+.msg.a .desc-col { text-align: justify; }
+.msg.a ul { padding-left: 22px; }
+.msg.a h2, .msg.a h3, .msg.a h4 { margin: .6em 0 .3em; }
+.msg.a code { background: #eef1f8; padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+
+/* ===== Модели (DeepSeek-flash + GigaChat) ===== */
+.msg.a .variant {
+    margin: 12px 0;
+    border: 1px solid #d8deee;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+}
+.msg.a .variant + .variant { margin-top: 16px; }
+
+.msg.a .variant-head {
+    display: flex;
+    align-items: center;
+    padding: 9px 12px;
+    border-bottom: 1px solid #e6e9f4;
+    background: rgba(31, 45, 90, 0.03);
+    border-radius: 9px 9px 0 0;
+}
+.msg.a .variant-name {
+    font-weight: 800;
+    font-size: .98rem;
+    white-space: nowrap;
+}
+.msg.a .variant-body { padding: 8px 14px 12px; }
+
+.msg.a .variant-ds-flash .variant-name { color: #2c4ecf; }
+.msg.a .variant-gc-base .variant-name { color: #22843a; }
+
+/* Подсветка в ответе фрагментов, взятых из памяти агента:
+   рабочая — фисташковый фон, долговременная — фуксия. */
+.msg.a .mem-src {
+    border-radius: 3px;
+    padding: 0 2px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+.msg.a .mem-src-working {
+    background: #d8edbf;
+    color: #2f4a15;
+    box-shadow: inset 0 -2px 0 #93c572;
+}
+.msg.a .mem-src-longterm {
+    background: #f2cef2;
+    color: #5a1a5a;
+    box-shadow: inset 0 -2px 0 #c154c1;
+}
+
+/* ===== Панель выбора моделей (кнопки + температура) ===== */
+.model-bar {
+    flex-shrink: 0;
+    background: #fff;
+    border-bottom: 1px solid #e3e7f2;
+    padding: 8px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.model-bar-hint {
+    font-size: .72rem;
+    color: var(--muted);
+}
+.model-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.model-ctrl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid #dfe4f0;
+    border-radius: 9px;
+    padding: 6px 10px;
+    background: #f7f8fc;
+}
+.model-ctrl.active {
+    border-color: var(--accent);
+    background: #eef1ff;
+    box-shadow: 0 0 0 1px var(--accent);
+}
+.model-ctrl .m-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    font-size: .82rem;
+    padding: 3px 2px;
+    color: #1a1a2e;
+}
+.model-ctrl .m-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid #c3c9da;
+    background: #fff;
+    flex-shrink: 0;
+}
+.model-ctrl.active .m-dot {
+    border-color: transparent;
+    background: var(--accent);
+}
+.model-ctrl.inactive { opacity: .55; filter: grayscale(.4); }
+.model-temp {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: .68rem;
+    color: #5f6a85;
+}
+.model-temp label { cursor: default; }
+.model-temp input {
+    width: 62px;
+    font: inherit;
+    font-size: .72rem;
+    padding: 2px 5px;
+    border: 1px solid #cdd4e6;
+    border-radius: 5px;
+    background: #fff;
+    color: #223;
+}
+
+/* ===== Глобальная настройка max_tokens (вкл/выкл + ввод) ===== */
+.gen-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-top: 6px;
+    margin-top: 2px;
+    border-top: 1px dashed #e3e7f2;
+}
+.gen-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: .82rem;
+    color: #1a1a2e;
+    user-select: none;
+}
+.gen-switch input { cursor: pointer; width: auto; }
+.gen-name { font-family: 'Consolas', monospace; }
+.gen-input {
+    width: 110px;
+    font: inherit;
+    font-size: .8rem;
+    padding: 4px 8px;
+    border: 1px solid #cdd4e6;
+    border-radius: 6px;
+    background: #fff;
+    color: #223;
+    transition: opacity .15s;
+}
+.gen-input:disabled {
+    opacity: .45;
+    background: #f0f2f8;
+    cursor: not-allowed;
+}
+.gen-note {
+    font-size: .68rem;
+    color: var(--muted);
+}
+
+/* ===== Сжатие истории ===== */
+.compact-bar {
+    border-top-style: dashed;
+}
+.compact-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: .78rem;
+    color: #1a1a2e;
+}
+.compact-label span {
+    white-space: nowrap;
+}
+.compact-input {
+    width: 70px;
+}
+
+/* ===== Статистика токенов в заголовке (по моделям + полоска) ===== */
+.tstat {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    min-width: 260px;
+    max-width: 460px;
+    padding: 0;
+}
+.tstat-head {
+    font-size: .68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    color: #8a92a6;
+}
+.tstat-head-models {
+    text-transform: none;
+    color: #4a5370;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+/* Столбик моделей */
+.tstat-models {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.tstat-model {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: .74rem;
+    line-height: 1.35;
+    padding: 1px 0;
+}
+.tstat-model .tm-name { color: #2b3350; font-weight: 700; }
+.tstat-model .tm-val { color: #4a5568; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tstat-model.empty { color: #a1a8bb; font-style: italic; justify-content: flex-start; }
+
+.tstat-totals {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: .76rem;
+    color: #1b2559;
+    font-weight: 700;
+    padding-top: 3px;
+    border-top: 1px solid #eef0f8;
+    width: 100%;
+}
+.tstat-total { white-space: nowrap; }
+.tstat-total b { color: #1b2559; }
+
+.sw {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 3px;
+    vertical-align: baseline;
+}
+.sw-in  { background: #4d6bfe; }
+.sw-out { background: #22a06b; }
+.sw-hist { background: #e0952f; }
+/* Рабочая память — фисташковый; долговременная — фуксия */
+.sw-working { background: #93c572; }
+.sw-longterm { background: #c154c1; }
+.mem-name-working { color: #93c572; font-weight: 700; }
+.mem-name-longterm { color: #c154c1; font-weight: 700; }
+
+.tstat-pct { color: #b07b1e; font-weight: 700; }
+
+.tstat-bar {
+    position: relative;
+    width: 100%;
+    min-width: 180px;
+    height: 13px;
+    border-radius: 7px;
+    background: #eef0f8;
+    overflow: hidden;
+    border: 1px solid #e3e7f2;
+}
+.tstat-bar .seg {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    height: 100%;
+    transition: width .45s ease;
+}
+.tstat-bar .seg-in  { background: linear-gradient(90deg,#4d6bfe,#7189ff); }
+.tstat-bar .seg-out { background: linear-gradient(90deg,#22a06b,#3fcf8f); }
+.tstat-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .66rem;
+    color: #a1a8bb;
+}
+
+/* ===== Память агента (три типа, редактируются раздельно) ===== */
+.mem-block {
+    border: 1px solid #3a4360;
+    border-radius: 7px;
+    padding: 6px 7px;
+    margin-bottom: 7px;
+    background: #2b3247;
+}
+/* Подсветка блоков памяти: рабочая — фисташковая, долговременная — фуксия
+   (те же цвета, что и метки в блоке «Запрос/Ответ/…»). */
+.mem-working {
+    border-color: #93c572;
+    box-shadow: inset 3px 0 0 #93c572;
+}
+.mem-working .mem-head { color: #cfe6b6; }
+.mem-longterm {
+    border-color: #c154c1;
+    box-shadow: inset 3px 0 0 #c154c1;
+}
+.mem-longterm .mem-head { color: #e6b6e6; }
+.mem-head {
+    font-size: .72rem;
+    font-weight: 600;
+    color: #cdd5ea;
+    margin-bottom: 2px;
+}
+.mem-tag {
+    display: inline-block;
+    font-size: .6rem;
+    font-weight: 400;
+    color: #8a92a6;
+    background: #232a3d;
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-bottom: 6px;
+    white-space: nowrap;
+}
+.mem-info {
+    font-size: .68rem;
+    color: #a7b0c6;
+    font-style: italic;
+}
+.mem-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+.mem-empty {
+    font-size: .68rem;
+    color: #8a92a6;
+    font-style: italic;
+}
+.mem-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.mem-row .mem-key {
+    flex: 0 0 38%;
+    min-width: 0;
+}
+.mem-row .mem-val {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.mem-row .mem-key,
+.mem-row .mem-val {
+    box-sizing: border-box;
+    background: #232a3d;
+    border: 1px solid #3a4360;
+    border-radius: 5px;
+    color: #dbe2f2;
+    font-size: .68rem;
+    padding: 3px 5px;
+}
+.mem-row .mem-key:focus,
+.mem-row .mem-val:focus {
+    outline: none;
+    border-color: #5a6488;
+}
+.mem-row .mem-del {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: #b7bfd6;
+    cursor: pointer;
+    font-size: .9rem;
+    line-height: 1;
+    padding: 0 3px;
+}
+.mem-row .mem-del:hover { color: #ffb9c2; }
+.mem-rows::-webkit-scrollbar { width: 8px; }
+.mem-rows::-webkit-scrollbar-thumb { background: #4a5270; border-radius: 6px; }
+.mem-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
+.mem-actions .btn-side { flex: 1 1 0; font-size: .68rem; padding: 3px 4px; }
+
+/* ===== Стратегия управления контекстом ===== */
+.strategy-bar {
+    align-items: center;
+}
+.strategy-label {
+    font-weight: 700;
+    font-size: .82rem;
+    color: #1a1a2e;
+}
+.strategy-group {
+    display: inline-flex;
+    gap: 4px;
+}
+/* Стратегии в ЛЕВОЙ колонке (тёмный фон) */
+.side-strategy {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.side-strategy .strat-btn {
+    background: #38405c;
+    border-color: #4a5270;
+    color: #cfd6ea;
+    font-size: .72rem;
+    padding: 4px 9px;
+}
+.side-strategy .strat-btn:hover { background: #465275; }
+.side-strategy .strat-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 1px var(--accent);
+}
+/* Метки/подписи полей в левой колонке */
+.side-label {
+    color: #cfd6ea;
+    font-size: .74rem;
+    flex-wrap: wrap;
+}
+.side-label .compact-input {
+    width: 64px;
+    background: #343c52;
+    color: #fff;
+    border-color: #4a5270;
+}
+.side-note {
+    font-size: .64rem;
+    color: #8a92a6;
+    line-height: 1.3;
+}
+.strat-btn {
+    font: inherit;
+    font-size: .76rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border: 1px solid #cdd4e6;
+    border-radius: 16px;
+    background: #f7f8fc;
+    color: #3a4560;
+    cursor: pointer;
+}
+.strat-btn:hover { background: #eef1ff; }
+.strat-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* ===== Поле ввода внизу чата (вариант A) ===== */
+.composer {
+    flex-shrink: 0;
+    background: #fff;
+    border-top: 1px solid #e3e7f2;
+    padding: 10px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.composer-inner {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    max-width: 900px;
+    width: 100%;
+    margin: 0 auto;
+}
+.composer .composer-input {
+    flex: 1 1 auto;
+    min-height: 38px;
+    max-height: 180px;
+    resize: vertical;
+    background: #f4f6fc;
+    color: #223;
+    border: 1px solid #cdd4e6;
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-size: .9rem;
+}
+.composer .composer-input::placeholder { color: #9aa2bd; }
+.composer .composer-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.composer .composer-send {
+    width: auto;
+    padding: 10px 22px;
+    border-radius: 10px;
+    flex: 0 0 auto;
+}
+.composer-status {
+    max-width: 900px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+/* ===== Панель Facts (key-value) ===== */
+.panel-title-sub {
+    background: var(--chat-bg);
+    font-size: .68rem;
+    border-top: 1px solid #e3e7f2;
+}
+.facts-box {
+    padding: 8px 22px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.facts-empty, .branches-empty {
+    font-size: .72rem;
+    color: #7d879c;
+    font-style: italic;
+}
+.fact-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.fact-row input {
+    font: inherit;
+    font-size: .72rem;
+    padding: 3px 6px;
+    border: 1px solid #cdd4e6;
+    border-radius: 5px;
+    background: #fff;
+    color: #223;
+    min-width: 0;
+}
+.fact-row .fact-key { flex: 0 0 30%; font-weight: 700; }
+.fact-row .fact-val { flex: 1 1 auto; }
+.fact-row .fact-mem {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: .68rem;
+    padding: 3px 4px;
+    border: 1px solid #cdd4e6;
+    border-radius: 5px;
+    background: #fff;
+    color: #223;
+    max-width: 120px;
+}
+.fact-row .fact-del {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: #b02a37;
+    cursor: pointer;
+    font-size: .9rem;
+    line-height: 1;
+    padding: 0 3px;
+}
+.facts-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+}
+.facts-actions button {
+    font: inherit;
+    font-size: .7rem;
+    padding: 4px 8px;
+    border: 1px solid #cdd4e6;
+    border-radius: 6px;
+    background: #f7f8fc;
+    cursor: pointer;
+}
+.facts-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ===== Панель веток диалога ===== */
+.branches-box {
+    padding: 8px 22px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.branch-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .72rem;
+    padding: 4px 7px;
+    border-radius: 6px;
+    background: #f7f8fc;
+    border: 1px solid #e3e7f2;
+    cursor: pointer;
+}
+.branch-row.active { background: #eef1ff; border-color: var(--accent); }
+.branch-row .b-name { flex: 1 1 auto; font-weight: 700; color: #2b3350; }
+.branch-row .b-size { color: #8a92a6; font-size: .64rem; }
+.branch-row .b-ren {
+    border: none;
+    background: transparent;
+    color: #5a6a8c;
+    cursor: pointer;
+    font-size: .8rem;
+    line-height: 1;
+    padding: 0 3px;
+}
+.branch-row .b-ren:hover { color: var(--accent); }
+.branch-row .b-name-edit {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: inherit;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    background: #fff;
+    color: #2b3350;
+}
+.branch-row .b-del {
+    border: none;
+    background: transparent;
+    color: #b02a37;
+    cursor: pointer;
+    font-size: .85rem;
+    line-height: 1;
+}
+.branches-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 3px;
+    flex-wrap: wrap;
+}
+.branches-actions input {
+    width: 50px;
+    font: inherit;
+    font-size: .72rem;
+    padding: 3px 6px;
+    border: 1px solid #cdd4e6;
+    border-radius: 5px;
+}
+.branches-actions button {
+    font: inherit;
+    font-size: .7rem;
+    padding: 4px 8px;
+    border: 1px solid #cdd4e6;
+    border-radius: 6px;
+    background: #f7f8fc;
+    cursor: pointer;
+}
+.branches-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ===== Профили (персоны) в левой колонке ===== */
+.profiles-box {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.profiles-empty {
+    font-size: .68rem;
+    color: #8a92a6;
+    font-style: italic;
+}
+.profile-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: #2b3247;
+    border: 1px solid #3a4360;
+    cursor: pointer;
+    flex-wrap: wrap;
+}
+.profile-row.active {
+    border-color: var(--accent);
+    background: #333c5c;
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+.profile-row .p-name {
+    flex: 1 1 auto;
+    font-size: .74rem;
+    font-weight: 700;
+    color: #dfe4f2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.profile-row.active .p-name { color: #fff; }
+/* Аватарка профиля — кружок с первой буквой имени, всегда видна в карточке. */
+.profile-row .p-avatar {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: .72rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-transform: uppercase;
+}
+.profile-row.active .p-avatar {
+    background: #7d92ff;
+}
+.profile-row .p-meta {
+    flex: 1 1 100%;
+    font-size: .62rem;
+    color: #9aa2bd;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.profile-row .p-size {
+    font-size: .6rem;
+    color: #8a92a6;
+    white-space: nowrap;
+}
+.profile-row .p-ren,
+.profile-row .p-del {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: .82rem;
+    line-height: 1;
+    padding: 0 3px;
+}
+.profile-row .p-ren { color: #9aa2bd; }
+.profile-row .p-ren:hover { color: #cfd6ea; }
+.profile-row .p-del { color: #b7bfd6; }
+.profile-row .p-del:hover { color: #ffb9c2; }
+.profiles-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 5px;
+}
+.profiles-actions .profile-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #343c52;
+    color: #fff;
+    border-color: #4a5270;
+    font-size: .72rem;
+    padding: 4px 7px;
+}
+.profiles-actions .profile-input::placeholder { color: #9aa2bd; }
+.profiles-actions .btn-side {
+    background: var(--accent);
+    font-size: .74rem;
+    padding: 6px;
+}
+.profiles-actions .btn-side:hover { background: var(--accent-dark); }
+/* Кнопки формы создания профиля (Сохранить / Отмена). */
+.profiles-form-buttons {
+    display: flex;
+    gap: 5px;
+}
+.profiles-form-buttons .btn-side {
+    flex: 1 1 0;
+    font-size: .72rem;
+    padding: 6px 5px;
+}
+.profiles-form-buttons .btn-side.link {
+    background: #38405c;
+}
+.profiles-form-buttons .btn-side.link:hover { background: #465275; }
+
+/* Выпадающий список модели персоны (тёмная тема левой колонки). */
+.profiles-actions select.profile-input {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+}
+
+/* Режим выбора моделей, когда отвечает персона: выбор сверху недоступен. */
+.model-list.locked {
+    opacity: .5;
+    pointer-events: none;
+    filter: grayscale(.35);
+}
+
+/* ===== Состояние задачи (Task State Machine) в левой колонке ===== */
+.task-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid #3a4360;
+    border-radius: 7px;
+    padding: 7px 8px;
+    background: #2b3247;
+}
+/* Пока задача не заведена — приглушённый вид; активная подсвечивается. */
+.task-box.active {
+    border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+.task-box.paused {
+    border-color: #e0a52f;
+    box-shadow: inset 3px 0 0 #e0a52f;
+}
+.task-box.done {
+    border-color: #22a06b;
+    box-shadow: inset 3px 0 0 #22a06b;
+}
+.task-empty {
+    font-size: .68rem;
+    color: #8a92a6;
+    font-style: italic;
+}
+.task-goal {
+    font-size: .74rem;
+    color: #dfe4f2;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.task-goal b { color: #fff; }
+/* Полоска этапов: пройденные / текущий / будущие. */
+.task-progress {
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+.task-stage {
+    font-size: .6rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #232a3d;
+    color: #8a92a6;
+    white-space: nowrap;
+    border: 1px solid #3a4360;
+}
+.task-stage.done { background: #1f4436; color: #b4f0cf; border-color: #2f6b52; }
+.task-stage.current { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 700; }
+.task-stage.current.paused { background: #e0a52f; border-color: #e0a52f; color: #2a2000; }
+.task-field {
+    font-size: .68rem;
+    color: #a7b0c6;
+    line-height: 1.35;
+}
+.task-field b { color: #dfe4f2; }
+.task-badge {
+    display: inline-block;
+    font-size: .6rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+.task-badge.paused { background: #e0a52f; color: #2a2000; }
+.task-badge.done { background: #22a06b; color: #fff; }
+.task-badge.active { background: var(--accent); color: #fff; }
+.task-journal {
+    margin: 0;
+    padding: 0 0 0 14px;
+    font-size: .62rem;
+    color: #9aa2bd;
+    line-height: 1.35;
+    max-height: 84px;
+    overflow-y: auto;
+}
+.task-journal li { margin: 1px 0; }
+.task-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 6px;
+}
+.task-actions .task-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #343c52;
+    color: #fff;
+    border-color: #4a5270;
+    font-size: .72rem;
+    padding: 4px 7px;
+}
+.task-actions .task-input::placeholder { color: #9aa2bd; }
+/* Кнопки выбора этапа (ручной переход). */
+.task-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.task-steps .stage-btn {
+    font-size: .64rem;
+    padding: 3px 7px;
+    border-radius: 12px;
+    background: #343c52;
+    color: #cfd6ea;
+    border: 1px solid #4a5270;
+    cursor: pointer;
+}
+.task-steps .stage-btn:hover { background: #465275; }
+.task-steps .stage-btn.current {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 700;
+}
+.task-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.task-buttons .btn-side {
+    flex: 1 1 42%;
+    font-size: .68rem;
+    padding: 5px 4px;
+}
+.task-buttons .btn-side.primary { background: var(--accent); }
+.task-buttons .btn-side:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+}
+
+/* ===== ИНВАРИАНТЫ (жёсткие правила, которые нельзя нарушать) ===== */
+.invariants-box {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    border: 1px solid #3a4360;
+    border-radius: 7px;
+    padding: 7px 8px;
+    background: #2b3247;
+}
+.invariants-empty {
+    font-size: .68rem;
+    color: #8a92a6;
+    font-style: italic;
+}
+.invariant-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 5px;
+    padding: 4px 5px;
+    border-radius: 6px;
+    background: #232a3d;
+    border: 1px solid #3a4360;
+}
+.inv-badge {
+    flex: 0 0 auto;
+    font-size: .58rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    color: #fff;
+}
+.inv-architecture { background: #4d6bfe; }
+.inv-tech { background: #7a5cff; }
+.inv-stack { background: #0f9d8f; }
+.inv-business { background: #c47f17; }
+.inv-text {
+    flex: 1 1 auto;
+    font-size: .7rem;
+    color: #dfe4f2;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.inv-del {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: #b7bfd6;
+    cursor: pointer;
+    font-size: .85rem;
+    line-height: 1;
+    padding: 0 3px;
+}
+.inv-del:hover { color: #ffb9c2; }
+.invariants-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 6px;
+}
+.invariants-actions .invariant-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #343c52;
+    color: #fff;
+    border-color: #4a5270;
+    font-size: .72rem;
+    padding: 4px 7px;
+}
+.invariants-actions .invariant-input::placeholder { color: #9aa2bd; }
+.invariants-form-buttons { display: flex; gap: 5px; }
+.invariants-form-buttons .btn-side { flex: 1 1 0; font-size: .7rem; padding: 5px 4px; }
+/* Бейдж «отказ: нарушение инварианта» в шапке карточки ответа. */
+.msg.a .variant-badge {
+    margin-left: auto;
+    font-size: .66rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 9px;
+    background: #b3261e;
+    color: #fff;
+    white-space: nowrap;
+}
+/* Карточка-ОТКАЗ: ответ модели, нарушавший инвариант. */
+.msg.a .variant-invariant-refuse { border-color: #e2b7b3; }
+.msg.a .variant-invariant-refuse .variant-head { background: rgba(179, 38, 30, 0.08); }
+.msg.a .variant-invariant-refuse .variant-name { color: #b3261e; }
+.msg.a .variant-invariant-refuse .variant-body blockquote {
+    margin: 6px 0;
+    padding: 6px 10px;
+    border-left: 3px solid #b3261e;
+    background: rgba(179, 38, 30, 0.06);
+    font-style: italic;
+    color: #5a1a18;
+}
+.invariant-refuse-reason {
+    font-size: .84rem;
+    color: #5a3a38;
+    margin-top: 4px;
+}
+
+/* ===== MCP (Model Context Protocol) ===== */
+/* Чекбокс включения MCP, кнопка проверки статуса, селект модели и
+   строка статуса сервера. Всё — в тёмной палитре левой колонки. */
+.mcp-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+.mcp-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .76rem;
+    color: #cfd6ea;
+    cursor: pointer;
+}
+.mcp-toggle input { cursor: pointer; width: auto; }
+/* Строка «модель MCP»: подпись + селект в один столбец во всю ширину. */
+.mcp-box .side-label {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+}
+.mcp-input {
+    width: 100%;
+    font: inherit;
+    font-size: .74rem;
+    color: #eaeefb;
+    background: #343c52;
+    border: 1px solid #3d4763;
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+.mcp-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.mcp-status-row .btn-side {
+    flex: 0 0 auto;
+    width: auto;
+    font-size: .7rem;
+    padding: 5px 8px;
+}
+.mcp-status {
+    font-size: .68rem;
+    color: #8a92a6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.mcp-status.ok { color: #7bd88f; }
+.mcp-status.error { color: #f08a86; }
+.mcp-tools {
+    font-size: .64rem;
+    color: #9aa2bd;
+    line-height: 1.3;
+    word-break: break-word;
+}
+/* Отчёт о запуске КОМПОЗИЦИИ (календарь → замполит → завхоз). */
+.mcp-compose-status {
+    font-size: .66rem;
+    color: #cfd6ea;
+    line-height: 1.35;
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: #232a3d;
+    border: 1px solid #3a4360;
+    word-break: break-word;
+}
+.mcp-compose-status.ok {
+    background: #1f4436;
+    color: #b4f0cf;
+    border-color: #2f6b52;
+}
+.mcp-compose-status.error {
+    background: #5a2a33;
+    color: #ffb9c2;
+    border-color: #7a3a44;
+}
+/* Кнопка запуска композиции — акцентная, во всю ширину. */
+#mcp-compose { width: 100%; }
+
+/* ===== Доска (task5): таблица «событие ↔ курс валюты» ===== */
+.msg.a .board-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: .88rem;
+}
+.msg.a .board-table th {
+    background: var(--accent);
+    color: #fff;
+    padding: 6px 10px;
+    text-align: left;
+    border: 1px solid var(--accent);
+}
+.msg.a .board-table td {
+    padding: 5px 10px;
+    border: 1px solid #e0e4f0;
+    vertical-align: top;
+}
+.msg.a .board-table tr:nth-child(even) td { background: #f7f8fc; }
+.board-empty {
+    color: #7d879c;
+    font-style: italic;
+    font-size: .86rem;
+}
+
+/* ===== Ответы через MCP ===== */
+/* Карточка ответа, полученного через MCP-инструмент (или прямой ответ
+   модели при включённом MCP, когда инструмент не понадобился). */
+.msg.a .mcp-answer {
+    margin: 10px 0;
+    border: 1px solid #cdd7ec;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+}
+.msg.a .mcp-answer-head {
+    background: #eaf0ff;
+    color: #213a86;
+    font-size: .86rem;
+    font-weight: 600;
+    padding: 7px 12px;
+    border-bottom: 1px solid #dbe3f6;
+}
+.msg.a .mcp-answer-body {
+    padding: 8px 12px 12px;
+}
+.msg.a .mcp-answer-body pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Consolas', 'Segoe UI', monospace;
+    font-size: .9rem;
+    background: #f7f8fc;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.msg.a .mcp-answer-error { border-color: #e2b7b3; }
+.msg.a .mcp-answer-error .mcp-answer-head {
+    background: rgba(179, 38, 30, 0.08);
+    color: #b3261e;
+}
+
+/* ===== СВОРАЧИВАЕМЫЕ СЕКЦИИ ЛЕВОЙ КОЛОНКИ =====
+   Каждый блок левой колонки — .side-sec: заголовок-кнопка (.side-sec-head)
+   + тело (.side-sec-body). Клик по заголовку сворачивает/разворачивает.
+   Цвета: оливковая палитра для «в использовании»/свёрнутого состояния. */
+.side-sec {
+    display: flex;
+    flex-direction: column;
+    border-radius: 7px;
+    overflow: hidden;
+    /* Оливковый цвет фона кнопки-заголовка, когда блок «в использовании». */
+    --olive: #6b7a3a;
+    --olive-dark: #55622c;
+    --olive-light: #8a9a52;
+}
+.side-sec-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-weight: 700;
+    font-size: .82rem;
+    letter-spacing: .3px;
+    color: #cfd6ea;
+    background: #31384f;              /* как фон колонки, но чуть светлее */
+    border: none;
+    padding: 7px 8px;
+    cursor: pointer;
+    user-select: none;
+}
+.side-sec-head:hover { background: #3a4260; }
+/* Каретка-индикатор: направление зависит от состояния (aria-expanded). */
+.side-sec-caret {
+    flex: 0 0 auto;
+    font-size: .7rem;
+    transition: transform .15s ease;
+}
+.side-sec.collapsed .side-sec-caret { transform: rotate(-90deg); }
+.side-sec-name { flex: 1 1 auto; min-width: 0; }
+
+/* Свёрнутое состояние: тело скрыто. */
+.side-sec.collapsed .side-sec-body { display: none; }
+
+/* ЗАГОЛОВОК СВЁРНУТОГО блока ЗАЛИВАЕТСЯ ОЛИВКОВЫМ, если внутри есть
+   активное использование (JS ставит класс .in-use). */
+.side-sec.collapsed.in-use > .side-sec-head {
+    background: var(--olive);
+    color: #16180d;
+}
+.side-sec.collapsed.in-use > .side-sec-head:hover {
+    background: var(--olive-dark);
+}
+/* Свёрнутый, но НЕ используемый блок — тот же фон, что и у колонки. */
+.side-sec.collapsed:not(.in-use) > .side-sec-head {
+    background: var(--side-bg);
+}
+.side-sec.collapsed:not(.in-use) > .side-sec-head:hover {
+    background: #31384f;
+}
+/* Развёрнутый, но используемый блок — тонкая оливковая левая полоса,
+   чтобы «активность» была видна и без сворачивания. */
+.side-sec:not(.collapsed).in-use > .side-sec-head {
+    box-shadow: inset 3px 0 0 var(--olive-light);
+}
+
+/* Тело секции: станок содержимого с небольшими отступами. */
+.side-sec-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 2px 4px;
+}
