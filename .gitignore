@@ -1,0 +1,69 @@
+# --- Секретные файлы (НИКОГДА не загружать на GitHub!) ---
+apidpsk.txt
+ya.txt
+exch.txt
+w.txt
+api_key.txt
+*.key
+.env
+.env.*
+
+# --- Папка с результатами (HTML) ---
+answer/
+
+# --- Локальные, не для выгрузки ---
+# Протоколы беседы разработки и состояние сессии запросов модели
+speech/
+sessions/
+
+# --- Временные файлы Python ---
+__pycache__/
+*.py[cod]
+*.so
+
+# --- Виртуальные окружения ---
+venv/
+.venv/
+env/
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+
+# --- Сборка PyInstaller (если вдруг) ---
+build/
+dist/
+*.spec
+
+# --- Логи/вывод при запуске сервера (не в git) ---
+srv_out.txt
+srv_err.txt
+run_out.txt
+run_err.txt
+run_*.txt
+*.log
+
+gigakey.txt
+
+# --- Результат «Цепочки» Конвертера (MCP): доп. инструмент save_result ---
+test_1.txt
+
+# --- Результат «Хранителя» погоды (MCP «Погода»): таблица по странам ---
+weathe.txt
+
+
+_run_o.txt
+_run_e.txt
+
+# --- однократные артефакты диагностики/пробных запросов ---
+ask_result.json
+session/
+
+# --- временные файлы отладочных прогонов ---
+last_resp.json
+sess.json
+

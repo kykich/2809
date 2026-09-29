@@ -1,0 +1,22 @@
+# Нормализация окончаний строк: при checkout — нативные для ОС,
+# в репозитории хранятся LF. Это исключает массовые «переписывания»
+# строк при каждом stage (проблема core.autocrlf).
+* text=auto
+
+# Для кода и разметки привычно хранить LF всегда.
+*.py       text eol=lf
+*.html     text eol=lf
+*.css      text eol=lf
+*.js       text eol=lf
+*.json     text eol=lf
+*.md       text eol=lf
+
+# Бинарные файлы не трогаем.
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.pdf      binary
+*.tif      binary
+*.tiff     binary
