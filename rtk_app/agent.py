@@ -167,7 +167,7 @@ class Agent:
 
     def answer(self, question, history=None, selected=None, max_tokens=None,
                compact=None, memory=None, profile=None, answer_title=None,
-               task_state=None, invariants=None):
+               task_state=None, invariants=None, rag_context=None):
         """Обрабатывает запрос пользователя и возвращает результат.
 
         Принимает:
@@ -204,6 +204,11 @@ class Agent:
                       ДЕТЕРМИНИРОВАННАЯ пост-проверка (отдельный вызов
                       модели): если ответ нарушает инвариант, он заменяется
                       ОТКАЗОМ с пояснением.
+            rag_context — строка с найденным RAG-контекстом (фрагменты
+                      документов) или None. Подмешивается в системный промпт
+                      перед диалогом (режим A2: контекст подставлен заранее,
+                      модель его «не ищет»). Поиск выполняет вызывающая
+                      сторона (server/session), агент только использует текст.
         Возвращает dict, единообразный для успеха и ошибок:
             ok      — True, если хотя бы одна модель ответила;
             text    — текстовое представление ответов;
@@ -249,7 +254,8 @@ class Agent:
 
         messages = self._build_messages(history, question, profile=profile,
                                         task_state=task_state,
-                                        invariants=invariants)
+                                        invariants=invariants,
+                                        rag_context=rag_context)
         hlen = len(history) if isinstance(history, list) else 0
         prof_note = ""
         if isinstance(profile, dict) and (profile.get("character")
@@ -263,11 +269,20 @@ class Agent:
         inv_list = [i for i in (invariants or [])
                     if isinstance(i, dict) and str(i.get("text") or "").strip()]
         inv_note = (" | инвариантов: %d" % len(inv_list)) if inv_list else ""
+        # RAG: контекст найденных документов (режим A2) — уже подставлен в
+        # системный промпт, отражаем его наличие в «ходе запросов».
+        rag_text = str(rag_context or "").strip()
+        rag_note = (" | RAG-контекст: %d симв." % len(rag_text)) if rag_text else ""
+        if rag_text:
+            trace.append({"kind": "act",
+                          "title": "Агент: добавлен RAG-контекст документов",
+                          "detail": "%d символов из индекса PDF подмешано в "
+                                    "системный промпт" % len(rag_text)})
         trace.append({"kind": "act", "title": "Агент собрал сообщения для API",
                       "detail": "%d сообщений (%d из истории + текущий) | системный "
-                                "промпт добавлен%s%s%s" % (len(messages), hlen,
-                                                          prof_note, task_note,
-                                                          inv_note)})
+                                "промпт добавлен%s%s%s%s" % (len(messages), hlen,
+                                                             prof_note, task_note,
+                                                             inv_note, rag_note)})
         print("[TRACE] Agent.answer() собрал %d сообщений для API" % len(messages),
               flush=True)
 
@@ -797,6 +812,29 @@ class Agent:
             "объясни, какой именно инвариант нарушен и почему.")
         return "\n".join(lines)
 
+    @staticmethod
+    def rag_system_prompt(rag_context):
+        """Собирает блок RAG-контекста для системного промпта (или "").
+
+        rag_context — строка с найденными фрагментами PDF-документов
+        (см. rtk_app/rag.py, режим A2) или None. Возвращает блок с
+        найденным контекстом и инструкцию опираться на него, не выдумывая
+        факты. Пустой/отсутствующий контекст → "" (промпт не меняется).
+        """
+        context = str(rag_context or "").strip()
+        if not context:
+            return ""
+        return "\n".join([
+            "КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ (документы RAG):",
+            context,
+            "",
+            "ИНСТРУКЦИЯ ПО RAG: опирайся на приведённые выше фрагменты "
+            "документов при ответе. Если в них есть ответ — используй его. "
+            "Если ответа в контексте нет — прямо скажи об этом и не "
+            "выдумывай факты, которых в документах нет. При использовании "
+            "сведений из контекста можешь ссылаться на источник (файл/стр.).",
+        ])
+
     def check_invariants(self, question, answer_text, invariants, model=None):
         """ДЕТЕРМИНИРОВАННАЯ пост-проверка ответа на нарушение инвариантов.
 
@@ -1025,7 +1063,7 @@ class Agent:
         return parse_facts_json(content), content
 
     def _build_messages(self, history, question, profile=None, task_state=None,
-                        invariants=None):
+                        invariants=None, rag_context=None):
         """Собирает полный список сообщений для API (системный промпт + диалог).
 
         ВАЖНО: из истории сохраняются НЕ только user/assistant, но и
@@ -1034,11 +1072,16 @@ class Agent:
         (рабочую и долговременную) и summary — будто памяти не существует.
 
         Все системные сообщения (промпт агента + память + summary + профиль +
-        состояние задачи + инварианты) ОБЪЕДИНЯЮТСЯ в ОДНО ведущее
-        system-сообщение: не все провайдеры корректно принимают несколько
-        system-сообщений, а GigaChat ожидает системную инструкцию в начале.
-        Диалог (user/assistant) идёт далее в исходном порядке, затем —
-        текущий вопрос пользователя.
+        состояние задачи + инварианты + RAG-контекст) ОБЪЕДИНЯЮТСЯ в ОДНО
+        ведущее system-сообщение: не все провайдеры корректно принимают
+        несколько system-сообщений, а GigaChat ожидает системную инструкцию
+        в начале. Диалог (user/assistant) идёт далее в исходном порядке,
+        затем — текущий вопрос пользователя.
+
+        rag_context — строка с найденными фрагментами документов (RAG, режим
+        A2) или None. Если задана — добавляется отдельным блоком в системную
+        часть вместе с инструкцией опираться на него и НЕ выдумывать факты,
+        которых в контексте нет.
         """
         system_parts = [SYSTEM_PROMPT]
         # Характер/стиль профиля (персоны) — задают тон и формат ответов.
@@ -1056,6 +1099,12 @@ class Agent:
         inv_prompt = self.invariants_system_prompt(invariants)
         if inv_prompt:
             system_parts.append(inv_prompt)
+        # RAG (Retrieval-Augmented Generation): контекст из PDF-документов.
+        # Режим A2 — контекст найден ЗАРАНЕЕ (вызывающей стороной) и здесь
+        # подставляется в промпт; модель опирается на него при ответе.
+        rag_prompt = self.rag_system_prompt(rag_context)
+        if rag_prompt:
+            system_parts.append(rag_prompt)
         dialog = []
         if isinstance(history, list):
             for m in history:

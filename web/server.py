@@ -67,6 +67,21 @@ JSON-API:
                                          (см. ниже);
                               "compose_stop" — остановить режим композиции
                                          (возврат к отдельным серверам).
+    GET  /api/rag           - состояние RAG: {enabled, docs_dir, top_k,
+                              embed_model, files, chunks, available, errors}
+    POST /api/rag           - {action, …} -> RAG (Retrieval-Augmented
+                              Generation) поверх PDF-документов:
+                              "state"   — вернуть состояние (по умолч.);
+                              "set"     — сохранить {enabled?, docs_dir?,
+                                          top_k?} (настраиваемый путь к
+                                          папке PDF + число фрагментов);
+                              "reindex" — (пере)индексировать PDF: текст ->
+                                          чанки -> эмбеддинги (Ollama
+                                          nomic-embed-text-v2-moe) -> SQLite;
+                              "clear"   — очистить индекс;
+                              "check"   — проверить модель эмбеддингов.
+                              При ВКЛЮЧЁННОМ RAG найденный контекст
+                              подмешивается в промпт (режим A2).
     """
 import json
 import mimetypes
@@ -586,6 +601,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(200, self.session.invariants_state())
         if path == "/api/mcp":
             return self._send_json(200, _mcp_state_payload(check=False))
+        if path == "/api/rag":
+            # Состояние RAG: настройки (enabled/docs_dir/top_k) + статистика
+            # индекса (файлов, чанков, модель эмбеддингов, ошибки).
+            return self._send_json(200, self.session.rag_status())
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
     def do_POST(self):
@@ -616,6 +635,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return self._handle_profiles()
         if urllib.parse.urlparse(self.path).path == "/api/mcp":
             return self._handle_mcp()
+        if urllib.parse.urlparse(self.path).path == "/api/rag":
+            return self._handle_rag()
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
     # ---------------- Статика ----------------
@@ -795,6 +816,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             print("[INVARIANT] инвариантов в запросе: %d" % len(invariants),
                   flush=True)
 
+        # RAG (Retrieval-Augmented Generation): при ВКЛЮЧЁННОМ RAG ищем
+        # релевантные фрагменты PDF-документов и подмешиваем их в промпт
+        # (режим A2 — поиск всегда, модель получает готовый контекст).
+        # Ошибки поиска (Ollama недоступна и т.п.) не ломают ответ модели.
+        rag_context, rag_hits = self.session.rag_context(question)
+        if rag_context:
+            print("[RAG] в запрос добавлено %d фрагментов (%d символов)"
+                  % (len(rag_hits), len(rag_context)), flush=True)
+        else:
+            print("[RAG] контекст не добавлен (выключен или индекс пуст)",
+                  flush=True)
+
         # НАПОМИНАНИЯ: АВТОМАТИЧЕСКИ забираем наступившие напоминания из
         # календаря (MCP-инструмент run_due) и доставляем их в чат ОТДЕЛЬНЫМ
         # сообщением (красный фон) — независимо от того, что спросил
@@ -871,7 +904,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                                        profile=profile,
                                        answer_title=answer_title,
                                        task_state=task_state,
-                                       invariants=invariants)
+                                       invariants=invariants,
+                                       rag_context=(rag_context or None))
         if result.get("ok"):
             # По одному ходу на ответ модели с уже готовой разметкой
             self.session.append_turn(question, {
@@ -1426,6 +1460,60 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         # action == "state" и всё прочее — отдаём состояние без проверки.
         return self._send_json(200, _mcp_state_payload(check=False))
+
+    def _handle_rag(self):
+        """Управление RAG: настройки, индексация, очистка, проверка модели.
+
+        Тело запроса (все поля необязательны, action определяет смысл):
+            action: "state"   — вернуть состояние RAG (по умолчанию);
+                    "set"     — сохранить настройки {enabled?, docs_dir?,
+                                top_k?};
+                    "reindex" — ПЕРЕИНДЕКСИРОВАТЬ папку PDF: извлечь текст,
+                                нарезать чанки, посчитать эмбеддинги и
+                                записать в SQLite-индекс; вернуть отчёт;
+                    "clear"   — очистить RAG-индекс (чанки + метаданные);
+                    "check"   — проверить доступность модели эмбеддингов
+                                Ollama (nomic-embed-text-v2-moe).
+        """
+        data = self._read_json_body() or {}
+        action = str(data.get("action", "state")).strip().lower()
+
+        if action == "set":
+            status = self.session.set_rag_settings(
+                enabled=(data.get("enabled")
+                         if "enabled" in data else None),
+                docs_dir=(data.get("docs_dir")
+                          if "docs_dir" in data else None),
+                top_k=(data.get("top_k") if "top_k" in data else None))
+            return self._send_json(200, status)
+
+        if action == "reindex":
+            # Путь для индексации: из запроса или из сохранённых настроек.
+            docs_dir = data.get("docs_dir")
+            if docs_dir is not None:
+                self.session.set_rag_settings(docs_dir=str(docs_dir))
+            print("[RAG] запущена (пере)индексация папки %r"
+                  % (docs_dir or self.session.rag_settings().get("docs_dir")),
+                  flush=True)
+            report = self.session.rag_reindex(docs_dir=docs_dir)
+            payload = self.session.rag_status()
+            payload["report"] = report
+            return self._send_json(200, payload)
+
+        if action == "clear":
+            status = self.session.rag_clear()
+            print("[RAG] индекс очищен.", flush=True)
+            return self._send_json(200, status)
+
+        if action == "check":
+            from rtk_app import rag as rag_mod
+            probe = rag_mod.embed_available()
+            payload = self.session.rag_status()
+            payload["embed_check"] = probe
+            return self._send_json(200, payload)
+
+        # action == "state" и всё прочее — отдаём состояние.
+        return self._send_json(200, self.session.rag_status())
 
 
 def create_server(agent, host=None, port=None):

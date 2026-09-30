@@ -54,6 +54,7 @@ import time
 
 from . import config
 from .task_state import TaskState
+from .rag import RagStore
 
 __all__ = ["SessionStore"]
 
@@ -107,6 +108,17 @@ class SessionStore:
         self.profiles = []
         self.active_profile = None
         self.profiles_path = self.path if explicit_path else config.PROFILES_FILE
+        # RAG (Retrieval-Augmented Generation): индекс PDF-документов в SQLite
+        # + настройки (enabled/docs_dir/top_k) в JSON. Настройки RAG — НЕ
+        # профильные: они общие для сервера (как MCP), поэтому хранятся
+        # отдельно от профилей. При вызове во временном файле (тесты) держим
+        # индекс рядом с ним, чтобы тесты не трогали продакшн-индекс.
+        if explicit_path:
+            base = os.path.splitext(self.path)[0]
+            self.rag = RagStore(index_file=base + "_rag.db",
+                                settings_file=base + "_rag.json")
+        else:
+            self.rag = RagStore()
         self.load()
 
     @staticmethod
@@ -688,7 +700,65 @@ class SessionStore:
             "task": self.get_task_state(),
             "invariants": self.invariants_state(),
             "profiles": self.profiles_state(),
+            "rag": self.rag_status(),
         }
+
+    # ==================================================================
+    # RAG (Retrieval-Augmented Generation)
+    # ==================================================================
+    # Тонкие обёртки над RagStore: единая точка доступа из server/agent и
+    # включение снимка RAG в full_state() (как у MCP/facts/веток).
+    def rag_status(self):
+        """Снимок состояния RAG для интерфейса (enabled/docs_dir/top_k/…)."""
+        try:
+            return self.rag.status()
+        except Exception:                        # noqa: BLE001
+            return {"enabled": bool(config.RAG_ENABLED),
+                    "docs_dir": config.RAG_DOCS_DIR,
+                    "top_k": config.RAG_TOP_K,
+                    "embed_model": config.RAG_EMBED_MODEL,
+                    "files": 0, "chunks": 0, "available": False,
+                    "errors": []}
+
+    def rag_settings(self):
+        """Текущие настройки RAG (enabled/docs_dir/top_k/…)."""
+        return self.rag.load_settings()
+
+    def set_rag_settings(self, enabled=None, docs_dir=None, top_k=None):
+        """Меняет настройки RAG. Возвращает обновлённый снимок статуса."""
+        self.rag.update_settings(enabled=enabled, docs_dir=docs_dir,
+                                 top_k=top_k)
+        return self.rag_status()
+
+    def rag_reindex(self, docs_dir=None):
+        """(Пере)индексация папки PDF. Возвращает отчёт прогона."""
+        with self.lock:
+            return self.rag.index_docs(docs_dir=docs_dir)
+
+    def rag_clear(self):
+        """Очистка RAG-индекса. Возвращает обновлённый снимок статуса."""
+        with self.lock:
+            self.rag.clear()
+            return self.rag_status()
+
+    def rag_context(self, question):
+        """Контекст RAG для запроса: (текст, фрагменты) или ("", []).
+
+        Выполняется ТОЛЬКО если RAG включён и в индексе есть чанки. Ошибки
+        эмбеддингов/поиска не должны ломать ответ модели — возвращаем пусто.
+        """
+        try:
+            settings = self.rag.load_settings()
+            if not settings.get("enabled"):
+                return "", []
+            if not self.rag.status().get("available"):
+                return "", []
+            return self.rag.build_context(question,
+                                          top_k=settings.get("top_k"),
+                                          docs_dir=settings.get("docs_dir"))
+        except Exception as exc:                 # noqa: BLE001
+            print("[RAG] поиск не выполнен: %s" % exc, flush=True)
+            return "", []
 
     def has_history(self):
         """True, если в сессии уже есть сохранённый диалог."""
