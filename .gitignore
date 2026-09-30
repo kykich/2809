@@ -63,6 +63,12 @@ _run_e.txt
 ask_result.json
 session/
 
+# --- Документы RAG (локальная база знаний из PDF) ---
+# Папка с PDF-документами и индекс (session/rag_index.db, session/rag.json)
+# — ЛОКАЛЬНЫЕ данные пользователя, в git не попадают. Путь к папке PDF
+# настраивается в интерфейсе (по умолчанию docs_rag/).
+docs_rag/
+
 # --- временные файлы отладочных прогонов ---
 last_resp.json
 sess.json

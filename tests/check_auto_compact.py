@@ -39,7 +39,8 @@ class FakeAgent:
 
     def answer(self, question, history=None, selected=None,
                max_tokens=None, compact=None, memory=None, profile=None,
-               answer_title=None, task_state=None, invariants=None):
+               answer_title=None, task_state=None, invariants=None,
+               rag_context=None):
         self.sent.append(list(history or []))
         return {"ok": True, "html": "", "text": "ok", "answers": [],
                 "meta": "", "usage": {"input": 1, "output": 1,

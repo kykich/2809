@@ -1,4 +1,4 @@
-/* Логика чата:
+﻿/* Логика чата:
    слева — ввод + история, справа — область ответа и «ход запросов».
 
    Особенности версии:
@@ -2027,6 +2027,166 @@
 
 
     // ------------------------------------------------------------------
+    // RAG (Retrieval-Augmented Generation) — база знаний из PDF
+    // ------------------------------------------------------------------
+    // Кнопки/поля блока RAG: чекбокс включения, путь к папке с PDF,
+    // число фрагментов (top-k), кнопки «Переиндексировать», «Проверить»
+    // (доступность модели эмбеддингов Ollama) и «Очистить» индекс.
+    // Настройки и статистика хранятся на сервере (GET/POST /api/rag).
+    var ragEnabledEl = document.getElementById("rag-enabled");
+    var ragDocsDirEl = document.getElementById("rag-docs-dir");
+    var ragTopKEl = document.getElementById("rag-top-k");
+    var ragReindexBtn = document.getElementById("rag-reindex");
+    var ragCheckBtn = document.getElementById("rag-check");
+    var ragClearBtn = document.getElementById("rag-clear");
+    var ragStatusEl = document.getElementById("rag-status");
+
+    // Локальный снимок состояния RAG.
+    var ragState = { enabled: false, docs_dir: "", top_k: 5,
+                     files: 0, chunks: 0, available: false,
+                     embed_model: "", updated: null };
+
+    // Показывает статус RAG: вкл/выкл, число файлов и фрагментов, модель.
+    function renderRagStatus(extraText) {
+        if (!ragStatusEl) return;
+        if (!ragState.enabled) {
+            ragStatusEl.textContent = "RAG выключен";
+            ragStatusEl.className = "rag-status";
+            return;
+        }
+        var parts = [];
+        if (ragState.available) {
+            parts.push("файлов: " + (ragState.files || 0));
+            parts.push("фрагментов: " + (ragState.chunks || 0));
+        } else {
+            parts.push("индекс пуст — нажмите «Переиндексировать»");
+        }
+        if (ragState.embed_model) parts.push("модель: " + ragState.embed_model);
+        if (ragState.updated) parts.push("обновлён: " + ragState.updated);
+        if (extraText) parts.push(extraText);
+        ragStatusEl.textContent = parts.join(" · ");
+        ragStatusEl.className = "rag-status " + (ragState.available ? "ok" : "warn");
+    }
+
+    // Применяет состояние RAG, пришедшее от сервера.
+    function applyRagState(d) {
+        if (!d) return;
+        if (typeof d.enabled === "boolean") ragState.enabled = d.enabled;
+        if (typeof d.docs_dir === "string") ragState.docs_dir = d.docs_dir;
+        if (typeof d.top_k === "number") ragState.top_k = d.top_k;
+        if (typeof d.files === "number") ragState.files = d.files;
+        if (typeof d.chunks === "number") ragState.chunks = d.chunks;
+        if (typeof d.available === "boolean") ragState.available = d.available;
+        if (typeof d.embed_model === "string") ragState.embed_model = d.embed_model;
+        if ("updated" in d) ragState.updated = d.updated;
+        if (ragEnabledEl) ragEnabledEl.checked = ragState.enabled;
+        if (ragDocsDirEl && document.activeElement !== ragDocsDirEl) {
+            ragDocsDirEl.value = ragState.docs_dir || "";
+        }
+        if (ragTopKEl && document.activeElement !== ragTopKEl) {
+            ragTopKEl.value = ragState.top_k || 5;
+        }
+        // Сообщение о проверке модели эмбеддингов (action: "check").
+        if (d.embed_check) {
+            if (d.embed_check.ok) {
+                renderRagStatus("эмбеддинги: ок (dim " + d.embed_check.dim + ")");
+            } else {
+                renderRagStatus("эмбеддинги недоступны: " +
+                                (d.embed_check.error || "?"));
+            }
+        } else {
+            renderRagStatus();
+        }
+        refreshSections();
+    }
+
+    // Отправляет действие RAG на сервер.
+    function ragAction(action, extra, done) {
+        var payload = { action: action };
+        if (extra) {
+            Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
+        }
+        return fetch("/api/rag", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) applyRagState(d); if (done) done(d); return d; })
+        .catch(function () { if (done) done(null); return null; });
+    }
+
+    // Загружает состояние RAG при старте страницы.
+    function initRag() {
+        fetch("/api/rag")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) { if (d) applyRagState(d); })
+            .catch(function () {});
+    }
+
+    if (ragEnabledEl) {
+        ragEnabledEl.addEventListener("change", function () {
+            var on = ragEnabledEl.checked;
+            ragAction("set", { enabled: on });
+            setStatus(on ? "RAG включён." : "RAG выключен.", "ok");
+        });
+    }
+    if (ragDocsDirEl) {
+        // Сохраняем путь при потере фокуса / Enter (чтобы не слать на каждый символ).
+        var saveRagDir = function () {
+            var dir = (ragDocsDirEl.value || "").trim();
+            if (!dir) return;
+            ragAction("set", { docs_dir: dir });
+        };
+        ragDocsDirEl.addEventListener("blur", saveRagDir);
+        ragDocsDirEl.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") { e.preventDefault(); saveRagDir(); }
+        });
+    }
+    if (ragTopKEl) {
+        ragTopKEl.addEventListener("change", function () {
+            ragAction("set", { top_k: parseInt(ragTopKEl.value, 10) || 5 });
+        });
+    }
+    if (ragReindexBtn) {
+        ragReindexBtn.addEventListener("click", function () {
+            ragReindexBtn.disabled = true;
+            if (ragStatusEl) {
+                ragStatusEl.textContent = "индексирую PDF… (может занять время)";
+                ragStatusEl.className = "rag-status warn";
+            }
+            setStatus("RAG: индексация PDF…", "");
+            ragAction("reindex", null, function (d) {
+                ragReindexBtn.disabled = false;
+                var rep = (d && d.report) || {};
+                if (rep && rep.ok) {
+                    var msg = "RAG: проиндексировано " + (rep.files || 0) +
+                              " файлов, " + (rep.chunks || 0) + " фрагментов";
+                    if (rep.errors && rep.errors.length) {
+                        msg += " (ошибок: " + rep.errors.length + ")";
+                    }
+                    setStatus(msg, "ok");
+                } else {
+                    setStatus("RAG: индексация не удалась" +
+                              (rep && rep.error ? " — " + rep.error : ""), "err");
+                }
+            });
+        });
+    }
+    if (ragCheckBtn) {
+        ragCheckBtn.addEventListener("click", function () {
+            ragCheckBtn.disabled = true;
+            ragAction("check").finally(function () { ragCheckBtn.disabled = false; });
+        });
+    }
+    if (ragClearBtn) {
+        ragClearBtn.addEventListener("click", function () {
+            ragAction("clear");
+            setStatus("RAG: индекс очищен.", "ok");
+        });
+    }
+
+    // ------------------------------------------------------------------
     // Сворачиваемые секции левой колонки
     // ------------------------------------------------------------------
     // Каждый блок левой колонки (.side-sec) прячется под заголовком-кнопкой
@@ -2034,7 +2194,8 @@
     // запоминается в localStorage. Заголовок СВЁРНУТОГО блока, внутри
     // которого ЕСТЬ активное использование (JS ставит класс .in-use),
     // заливается оливковым; неиспользуемый — под цвет фона колонки.
-    var SECTIONS_KEY = "ds-side-sections";
+
+﻿    var SECTIONS_KEY = "ds-side-sections";
 
     // Набор «активности» по каждой секции — функция возвращает true, если
     // внутри блока есть что-то реально задействованное (в т.ч. при свёрнутом
@@ -2053,8 +2214,11 @@
                 case "invariants":
                     return !!(invState && invState.invariants &&
                               invState.invariants.length);
-                case "mcp":
+                                case "mcp":
                     return !!(mcpState && (mcpState.enabled || mcpState.composition));
+                case "rag":
+                    // RAG активен, если включён И в индексе есть фрагменты.
+                    return !!(ragState && ragState.enabled && ragState.available);
                 case "summary":
                     return !!(compactState && parseInt(compactState.keep, 10) > 0);
                 case "memory":
@@ -2119,8 +2283,10 @@
 
     // Инициализация интерфейса.
     renderModelStats();
-    // Настраиваем MCP (вкл/выкл + модель) и проверяем его статус.
+        // Настраиваем MCP (вкл/выкл + модель) и проверяем его статус.
     initMcp();
+    // Настраиваем RAG (вкл/выкл, папка PDF, top-k) и читаем статус индекса.
+    initRag();
     renderModelsTitle();
     resetContextStats();
     // Показываем панели facts/веток согласно активной стратегии.

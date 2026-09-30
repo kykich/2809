@@ -1434,6 +1434,64 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 /* Кнопка запуска композиции — акцентная, во всю ширину. */
 #mcp-compose { width: 100%; }
 
+/* ===== RAG (Retrieval-Augmented Generation) ===== */
+/* Чекбокс включения RAG, путь к папке PDF, число фрагментов (top-k),
+   кнопки индексации/проверки/очистки и строка статуса индекса.
+   Оформление — в тёмной палитре левой колонки (как блок MCP). */
+.rag-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+.rag-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .76rem;
+    color: #cfd6ea;
+    cursor: pointer;
+}
+.rag-toggle input { cursor: pointer; width: auto; }
+/* Строки «папка с PDF» / «фрагментов»: подпись + поле в столбец. */
+.rag-box .side-label {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+}
+.rag-input {
+    width: 100%;
+    font: inherit;
+    font-size: .74rem;
+    color: #eaeefb;
+    background: #343c52;
+    border: 1px solid #3d4763;
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+.rag-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.rag-status-row .btn-side {
+    flex: 0 0 auto;
+    width: auto;
+    font-size: .7rem;
+    padding: 5px 8px;
+}
+.rag-status {
+    font-size: .68rem;
+    color: #8a92a6;
+    line-height: 1.35;
+    word-break: break-word;
+}
+.rag-status.ok { color: #7bd88f; }
+.rag-status.warn { color: #e0c07a; }
+.rag-status.error { color: #f08a86; }
+
 /* ===== Доска (task5): таблица «событие ↔ курс валюты» ===== */
 .msg.a .board-table {
     width: 100%;

@@ -192,6 +192,44 @@
                 </div>
             </section>
 
+            <!-- RAG (Retrieval-Augmented Generation): ответы с ОПОРОЙ на
+                 локальную базу знаний из PDF-документов. Папка с PDF
+                 индексируется (текстовый слой → чанки → эмбеддинги через
+                 Ollama nomic-embed-text-v2-moe), а при запросе найденные
+                 фрагменты подмешиваются в промпт модели (режим A2). Путь к
+                 папке НАСТРАИВАЕМЫЙ, из PDF берётся только текст. -->
+            <section class="side-sec" data-section="rag">
+                <button type="button" class="side-sec-head" aria-expanded="true">
+                    <span class="side-sec-caret">▾</span>
+                    <span class="side-sec-name">RAG (база знаний PDF)</span>
+                </button>
+                <div class="side-sec-body">
+                    <div class="rag-box">
+                        <label class="rag-toggle" title="Подмешивать в промпт найденные фрагменты документов">
+                            <input type="checkbox" id="rag-enabled">
+                            <span>Использовать RAG</span>
+                        </label>
+                        <label class="compact-label side-label">
+                            <span>папка с PDF</span>
+                            <input type="text" id="rag-docs-dir" class="gen-input rag-input"
+                                   placeholder="путь к папке с PDF" maxlength="400">
+                        </label>
+                        <label class="compact-label side-label">
+                            <span>фрагментов (top-k)</span>
+                            <input type="number" id="rag-top-k" class="gen-input rag-input"
+                                   min="1" max="20" step="1" value="5">
+                        </label>
+                        <div class="rag-status-row">
+                            <button id="rag-reindex" type="button" class="btn-side primary">Переиндексировать</button>
+                            <button id="rag-check" type="button" class="btn-side">Проверить</button>
+                            <button id="rag-clear" type="button" class="btn-side link">Очистить</button>
+                        </div>
+                        <span id="rag-status" class="rag-status">RAG выключен</span>
+                    </div>
+                    <span class="side-note">модель эмбеддингов — Ollama nomic-embed-text-v2-moe; из PDF берётся только текст</span>
+                </div>
+            </section>
+
             <!-- Summary: автоматическое сжатие истории (без кнопки).
                  Summary генерируется само после накопления указанного
                  числа несжатых сообщений. -->
